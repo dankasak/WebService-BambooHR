@@ -10,6 +10,8 @@ with 'WebService::BambooHR::UserAgent';
 use WebService::BambooHR::Employee;
 use WebService::BambooHR::Exception;
 use WebService::BambooHR::EmployeeChange;
+use WebService::BambooHR::DocumentCategory;
+use WebService::BambooHR::Document;
 
 my $DEFAULT_PHOTO_SIZE = 'small';
 my $COMMA = ',';
@@ -80,6 +82,78 @@ sub employee
     $json =~ s/"employmentStatus":/"status":/g;
 
     return WebService::BambooHR::Employee->new(decode_json($json));
+}
+
+sub employee_categories
+{
+    # This methos is strange. It returns a list of categories, *and* the files in those categories
+    my $self        = shift;
+    my $employee_id = shift;
+    
+    my $response;
+
+    eval {
+        $response = $self->_get("employees/$employee_id/files/view");
+    };
+    if ($@) {
+        return undef if ($@->code == 404);
+        $@->throw();
+    };
+
+    require XML::Simple;
+
+    # The ForceArray and KeyAttr options make it produce more JSON like data structure
+    # see the XML::Simple doc for more
+    my $category_files = XML::Simple::XMLin($response->{content}, ForceArray => 1, KeyAttr => []);
+    
+    my @categories;
+    
+    foreach my $cat ( @{$category_files->{category}} ) {
+        
+        # do the documents first ...
+        my @documents;
+        foreach my $doc ( @{$cat->{file}} ) {
+            push @documents, WebService::BambooHR::Document->new( $doc );
+        }
+        
+        # ... then the category
+        push @categories, WebService::BambooHR::DocumentCategory->new(
+            {
+                id      => $cat->{id}
+              , name    => $cat->{name}->[0]
+              , file    => \@documents
+            }
+        );
+        
+    }
+    
+    return \@categories;
+
+}
+
+sub add_employee_category
+{
+    my $self                = shift;
+    my $employee_id         = shift;
+    my $employee_category   = shift;
+    
+    my $body                = "<employee><category>$employee_category</category></employee>";
+    
+    my $response = $self->_post('employees/files/categories/', $body);
+    
+    if ( $response->{success} ) {
+        return $response->{success};
+    } else {
+        my @caller = caller(0);
+        WebService::BambooHR::Exception->throw({
+            method      => __PACKAGE__.'::add_employee_category',
+            message     => "API returned an error, status: [" . $response->{status} . "], reason: [" . $response->{reason} . "]",
+            code        => 500,
+            reason      => $response->{reason},
+            filename    => $caller[1],
+            line_number => $caller[2],
+        });
+    }
 }
 
 sub changed_employees
